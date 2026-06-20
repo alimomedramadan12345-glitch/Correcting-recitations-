@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>المصحف المعلم</title>
+  
+  <!-- المكتبات اللازمة لتشغيل التطبيق -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <style>
+    @keyframes soundWave {
+      0%, 100% { height: 8px; }
+      50% { height: 32px; }
+    }
+    .wave-bar { animation: soundWave 1.2s ease-in-out infinite; }
+    .wave-bar:nth-child(2) { animation-delay: 0.2s; }
+    .wave-bar:nth-child(3) { animation-delay: 0.4s; }
+    .wave-bar:nth-child(4) { animation-delay: 0.6s; }
+    .wave-bar:nth-child(5) { animation-delay: 0.1s; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    const encodedKey = "QVEuQWI4Uk42TEY5MnRaS1NfdGQ3bWd1YnNUeUZwSHlmWWpUYVFOODVhMHgweVdpWFNXSGc=";
+    const API_KEY = atob(encodedKey); 
+    const GEMINI_MODEL = "gemini-2.5-flash";
+
+    function App() {
+      const [surahsList, setSurahsList] = useState([]);
+      const [selectedSurah, setSelectedSurah] = useState(null);
+      const [surahVerses, setSurahVerses] = useState([]);
+      const [isLoadingQuran, setIsLoadingQuran] = useState(true);
+
+      const [status, setStatus] = useState("ready"); 
+      const [seconds, setSeconds] = useState(0);
+      const [audioBlob, setAudioBlob] = useState(null);
+      const [audioUrl, setAudioUrl] = useState(null);
+
+      const [analysisResult, setAnalysisResult] = useState(null);
+      const [errorMessage, setErrorMessage] = useState("");
+
+      const mediaRecorderRef = useRef(null);
+      const audioChunksRef = useRef([]);
+      const timerRef = useRef(null);
+
+      useEffect(() => {
+        fetch('https://api.alquran.cloud/v1/surah')
+          .then(res => res.json())
+          .then(data => {
+            setSurahsList(data.data);
+            setSelectedSurah(data.data[0]);
+            setIsLoadingQuran(false);
+          })
+          .catch(() => {
+            setErrorMessage("حدث خطأ في جلب قائمة السور.");
+            setIsLoadingQuran(false);
+          });
+      }, []);
+
+      useEffect(() => {
+        if (!selectedSurah) return;
+        setIsLoadingQuran(true);
+        setAnalysisResult(null);
+        setAudioBlob(null);
+        setAudioUrl(null);
+        if (status !== "recording") setStatus("ready");
+
+        fetch(`https://api.alquran.cloud/v1/surah/${selectedSurah.number}/quran-uthmani`)
+          .then(res => res.json())
+          .then(data => {
+            setSurahVerses(data.data.ayahs);
+            setIsLoadingQuran(false);
+          })
+          .catch(() => setIsLoadingQuran(false));
+      }, [selectedSurah]);
+
+      const getFullSurahText = () => {
+        if (surahVerses.length === 0) return "جاري تحميل الآيات...";
+        return surahVerses.map(v => `${v.text} ﴿${v.numberInSurah}﴾`).join(' ');
+      };
+
+      useEffect(() => {
+        if (status === "recording") {
+          timerRef.current = setInterval(() => setSeconds(p => p + 1), 1000);
+        } else {
+          clearInterval(timerRef.current);
+          if (status === "ready") setSeconds(0);
+        }
+        return () => clearInterval(timerRef.current);
+      }, [status]);
+
+      const startRecording = async () => {
+        setErrorMessage("");
+        setAnalysisResult(null);
+        audioChunksRef.current = [];
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const mediaRecorder = new MediaRecorder(stream);
+          mediaRecorderRef.current = mediaRecorder;
+          
+          mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) audioChunksRef.current.push(e.data);
+          };
+          
+          mediaRecorder.onstop = () => {
+            const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+            setAudioBlob(blob);
+            setAudioUrl(URL.createObjectURL(blob));
+            stream.getTracks().forEach(track => track.stop());
+          };
+
+          mediaRecorder.start();
+          setStatus("recording");
+        } catch (err) {
+          setErrorMessage("برجاء تفعيل صلاحية الميكروفون للتطبيق.");
+        }
+      };
+
+      const stopRecording = () => {
+        if (mediaRecorderRef.current && status === "recording") {
+          mediaRecorderRef.current.stop();
+          setStatus("finished");
+        }
+      };
+
+      const blobToBase64 = (blob) => {
+        return new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result.split(',')[1]);
+          reader.readAsDataURL(blob);
+        });
+      };
+
+      const analyzeAudioReal = async () => {
+        if (!audioBlob) return;
+        setStatus("analyzing");
+        setErrorMessage("");
+
+        const surahText = getFullSurahText();
+        const surahName = selectedSurah?.name || "";
+
+        try {
+          const base64Audio = await blobToBase64(audioBlob);
+
+          const prompt = `
+            أنت مقرئ مصحح قرآن كريم خبير. استمع للتلاوة الصوتية وقارنها بنص سورة ${surahName}: "${surahText}"
+            استخرج الأخطاء بدقة. يجب أن يكون ردك بصيغة JSON نقي تماماً ومطابق لهذا الهيكل:
+            {
+              "overall_score": 90,
+              "general_feedback": "توجيه عام مشجع وقيم",
+              "errors": [
+                {
+                  "word": "الكلمة"،
+                  "error_type": "تشكيل أو تجويد أو نقص"،
+                  "expected": "الصواب القرآني",
+                  "actual": "ما نطقه القارئ",
+                  "correction_tip": "نصيحة للتصحيح"
+                }
+              ]
+            }
+          `;
+
+          const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${API_KEY}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{
+                parts: [
+                  { text: prompt },
+                  { inlineData: { mimeType: "audio/webm", data: base64Audio } }
+                ]
+              }],
+              generationConfig: { responseMimeType: "application/json" }
+            })
+          });
+
+          if (!response.ok) throw new Error();
+
+          const data = await response.json();
+          let resultText = data.candidates[0].content.parts[0].text;
+          resultText = resultText.replace(/```json/g, '').replace(/```/g, '').trim();
+          
+          setAnalysisResult(JSON.parse(resultText));
+          setStatus("results");
+
+        } catch (err) {
+          setErrorMessage("حدثت مشكلة أثناء التحليل المباشر، يرجى إعادة المحاولة بتسجيل واضح.");
+          setStatus("finished");
+        }
+      };
+
+      return (
+        <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-[#05070f] via-[#0b1021] to-[#05070f] text-white p-4 font-sans selection:bg-amber-500/30" dir="rtl">
+          <div className="relative bg-[#0d1527]/70 backdrop-blur-xl p-6 md:p-8 rounded-3xl shadow-[0_0_50px_rgba(0,0,0,0.6)] border border-white/10 w-full max-w-md text-center overflow-hidden">
+            <div className="absolute -top-24 -left-24 w-48 h-48 bg-amber-500/20 rounded-full blur-[80px] pointer-events-none animate-pulse"></div>
+            <div className="absolute -bottom-24 -right-24 w-48 h-48 bg-cyan-500/20 rounded-full blur-[80px] pointer-events-none animate-pulse"></div>
+
+            <div className="mb-6">
+              <span className="bg-amber-500/10 text-amber-400 text-[10px] px-2.5 py-1 rounded-full border border-amber-500/20 font-bold uppercase tracking-wider shadow-inner">المصحف المعلم • برو (محمي)</span>
+              <h1 className="text-[22px] md:text-2xl font-black bg-gradient-to-r from-amber-200 via-amber-400 to-amber-200 bg-clip-text text-transparent mt-3 leading-snug">قناة اقرأ ورتل القرآن ترتيلاً</h1>
+            </div>
+
+            {status !== "results" && (
+              <div className="space-y-4">
+                <div className="text-right">
+                  <label className="text-[11px] text-amber-400/80 font-bold block mb-1 mr-1">1. اختر السورة الكريمة</label>
+                  <select 
+                    onChange={(e) => setSelectedSurah(surahsList.find(s => s.number == e.target.value))}
+                    className="w-full bg-black/50 border border-white/10 p-3 rounded-xl text-xs text-slate-200 focus:outline-none focus:border-amber-500/50 transition-all cursor-pointer shadow-inner"
+                  >
+                    {surahsList.map(s => <option key={s.number} value={s.number} className="bg-[#0d1527]">{s.name}</option>)}
+                  </select>
+                </div>
+
+                <div className="bg-gradient-to-b from-black/40 to-black/20 p-4 rounded-xl border border-white/5 text-center shadow-inner">
+                  <p className="text-sm font-serif leading-loose text-amber-100/90 max-h-28 overflow-y-auto pr-1">
+                    {isLoadingQuran ? "جاري إحضار المصحف العثماني..." : getFullSurahText()}
+                  </p>
+                </div>
+
+                {status === "recording" && (
+                  <div className="flex items-center justify-center gap-1 h-10 my-2 animate-fadeIn">
+                    <div className="w-1 bg-red-500 rounded-full wave-bar"></div>
+                    <div className="w-1 bg-orange-500 rounded-full wave-bar"></div>
+                    <div className="w-1 bg-amber-500 rounded-full wave-bar"></div>
+                    <div className="w-1 bg-yellow-500 rounded-full wave-bar"></div>
+                    <div className="w-1 bg-amber-500 rounded-full wave-bar"></div>
+                    <div className="w-1 bg-orange-500 rounded-full wave-bar"></div>
+                    <div className="w-1 bg-red-500 rounded-full wave-bar"></div>
+                  </div>
+                )}
+
+                <div className="flex flex-col items-center justify-center py-2 relative">
+                  <button 
+                    onClick={status === "recording" ? stopRecording : startRecording}
+                    className={`w-24 h-24 rounded-full font-bold text-xs transition-all duration-300 transform active:scale-95 shadow-2xl z-10 flex flex-col items-center justify-center gap-1 border ${
+                      status === "recording" 
+                      ? 'bg-gradient-to-b from-red-600 to-red-700 text-white border-red-400 shadow-red-600/40 animate-pulse' 
+                      : 'bg-gradient-to-br from-amber-300 via-amber-400 to-amber-500 text-slate-950 border-amber-300 shadow-amber-500/30 hover:brightness-110'
+                    }`}
+                  >
+                    <span className="text-lg">{status === "recording" ? "🛑" : "🎙️"}</span>
+                    <span>{status === "recording" ? "إيقاف" : "ابدأ التلاوة"}</span>
+                  </button>
+                  <p className="text-[10px] text-slate-400 mt-3 font-medium">
+                    {status === "recording" ? `جاري الاستماع الفعلي... ${seconds} ثانية` : "اضغط وابدأ القراءة مباشرة بصوتك"}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {status === "finished" && (
+              <div className="space-y-4 pt-2 animate-fadeIn">
+                {audioUrl && (
+                  <div className="bg-black/40 p-2.5 rounded-xl border border-white/5 shadow-inner">
+                    <p className="text-[10px] text-amber-400 text-right mb-1.5 mr-1">🎧 استمع لتسجيلك قبل الفحص:</p>
+                    <audio src={audioUrl} controls className="w-full h-8 accent-amber-500" />
+                  </div>
+                )}
+                <button 
+                  onClick={analyzeAudioReal}
+                  className="w-full bg-gradient-to-r from-emerald-600 via-emerald-500 to-emerald-600 hover:brightness-110 text-white py-3 rounded-xl font-bold text-xs shadow-xl shadow-emerald-600/20 transition-all border border-emerald-400/30"
+                >
+                  🚀 إرسال للشيخ الإلكتروني وتصحيح الأخطاء حياً
+                </button>
+                <button onClick={() => setStatus("ready")} className="text-[11px] text-slate-400 hover:text-white underline block mx-auto transition-all">إعادة تسجيل جديدة ↺</button>
+              </div>
+            )}
+
+            {status === "analyzing" && (
+              <div className="p-6 bg-amber-500/5 border border-amber-500/10 rounded-2xl my-4 text-center space-y-4 animate-fadeIn">
+                <div className="w-10 h-10 border-4 border-slate-800 border-t-amber-400 rounded-full animate-spin mx-auto"></div>
+                <div className="space-y-1">
+                  <p className="text-xs text-amber-400 font-bold animate-pulse">جاري مطابقة الصوت بالرسم العثماني...</p>
+                  <p className="text-[10px] text-slate-400">يقوم الذكاء الاصطناعي الآن بمراجعة مخارج الحروف والتشكيل</p>
+                </div>
+              </div>
+            )}
+
+            {errorMessage && <div className="p-3 bg-red-500/10 text-red-400 border border-red-500/20 text-xs rounded-xl mt-3 font-medium animate-fadeIn">⚠️ {errorMessage}</div>}
+
+            {status === "results" && analysisResult && (
+              <div className="mt-2 p-1 text-right space-y-4 animate-fadeIn">
+                <div className="bg-gradient-to-r from-slate-900 to-[#121b30] p-4 rounded-2xl border border-white/10 flex items-center gap-4 shadow-xl">
+                  <div className="w-16 h-16 rounded-full border-4 border-amber-400/30 border-t-amber-400 flex items-center justify-center font-black text-base text-amber-400 bg-amber-400/5 shadow-lg shadow-amber-500/10">
+                    {analysisResult.overall_score}%
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="text-xs font-bold text-amber-400">تقييم فضيلة الشيخ الإلكتروني:</h4>
+                    <p className="text-[11px] text-slate-200 mt-1 leading-relaxed font-medium">{analysisResult.general_feedback}</p>
+                  </div>
+                </div>
+
+                {analysisResult.errors && analysisResult.errors.length > 0 ? (
+                  <div className="space-y-2">
+                    <h5 className="text-[11px] font-bold text-slate-400 mr-1 flex items-center gap-1">📌 تفصيل الأخطاء ومواضع التصحيح:</h5>
+                    <div className="max-h-52 overflow-y-auto space-y-2.5 pr-1">
+                      {analysisResult.errors.map((err, idx) => (
+                        <div key={idx} className="bg-black/50 p-3 rounded-xl border-r-4 border-r-orange-500 border border-white/5 text-xs space-y-1.5 shadow-md">
+                          <div className="flex justify-between items-center">
+                            <span className="font-bold text-amber-300 text-sm">الكلمة: {err.word}</span>
+                            <span className="text-[9px] bg-orange-500/10 text-orange-400 px-2 py-0.5 rounded-full font-bold border border-orange-500/20">{err.error_type}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-300 bg-black/30 p-1.5 rounded border border-white/5">
+                            <span className="text-red-400 font-bold">سمعنا منك:</span> <span className="line-through opacity-80">{err.actual}</span>
+                            <span className="mx-2 text-slate-500">|</span>
+                            <span className="text-emerald-400 font-bold">الصواب:</span> <span className="font-serif underline decoration-emerald-500 decoration-2">{err.expected}</span>
+                          </div>
+                          <p className="text-[10px] text-cyan-300 bg-cyan-500/5 p-2 rounded-lg border border-cyan-500/10 leading-relaxed">💡 **توجيه:** {err.correction_tip}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-5 text-center text-xs text-emerald-400 font-bold bg-emerald-500/10 rounded-2xl border border-emerald-500/20 shadow-lg shadow-emerald-500/5 animate-pulse">
+                    ✨ هنيئاً لك! التلاوة ممتازة وخالية من الأخطاء الواضحة. واصل الحفظ والترتيل.
+                  </div>
+                )}
+
+                <button 
+                  onClick={() => setStatus("ready")} 
+                  className="w-full bg-gradient-to-r from-slate-800 to-slate-900 hover:from-slate-700 text-slate-200 py-3 rounded-xl font-bold text-xs mt-2 border border-white/5 transition-all shadow-md active:scale-98"
+                >
+                  تلاوة سورة أخرى أو إعادة الاختبار ↺
+                </button>
+              </div>
+            )}
+
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
